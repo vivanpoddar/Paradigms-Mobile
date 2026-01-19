@@ -26,11 +26,17 @@ export default function NoteCanvasScreen() {
   const currentStrokeColor = useSharedValue(INK);
   const currentBlendMode = useSharedValue<'clear' | 'srcOver'>('srcOver');
 
-  const commitStroke = useCallback((svgPath: string, strokeWidth: number, isEraser: boolean) => {
-    const path = Skia.Path.MakeFromSVGString(svgPath);
-    if (!path) return;
-    setStrokes((prev) => [...prev, { path, strokeWidth, isEraser }]);
-  }, []);
+  const finalizeStroke = useCallback(
+    (svgPath: string, strokeWidth: number, isEraser: boolean) => {
+      const path = Skia.Path.MakeFromSVGString(svgPath);
+      if (path) {
+        setStrokes((prev) => [...prev, { path, strokeWidth, isEraser }]);
+      }
+      currentPath.value.reset();
+      notifyChange(currentPath);
+    },
+    [currentPath]
+  );
 
   const selectTool = useCallback(
     (nextTool: Tool) => {
@@ -60,16 +66,14 @@ export default function NoteCanvasScreen() {
         })
         .onEnd(() => {
           const svgPath = currentPath.value.toSVGString();
-          runOnJS(commitStroke)(
+          runOnJS(finalizeStroke)(
             svgPath,
             currentStrokeWidth.value,
             currentBlendMode.value === 'clear'
           );
-          currentPath.value.reset();
-          notifyChange(currentPath);
         }),
     [
-      commitStroke,
+      finalizeStroke,
       currentBlendMode,
       currentPath,
       currentStrokeColor,
