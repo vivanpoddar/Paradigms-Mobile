@@ -19,6 +19,7 @@ const INK = '#1A1A1A';
 export default function NoteCanvasScreen() {
   const [tool, setTool] = useState<Tool>('pen');
   const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const [redoStack, setRedoStack] = useState<Stroke[]>([]);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const toolValue = useSharedValue<Tool>('pen');
   const currentPath = useSharedValue(Skia.Path.Make());
@@ -31,6 +32,7 @@ export default function NoteCanvasScreen() {
     (svgPath: string, strokeWidth: number, isEraser: boolean) => {
       const path = Skia.Path.MakeFromSVGString(svgPath);
       if (path) {
+        setRedoStack([]);
         setStrokes((prev) => [...prev, { path, strokeWidth, isEraser }]);
       }
       currentPath.value.reset();
@@ -46,6 +48,24 @@ export default function NoteCanvasScreen() {
     },
     [toolValue]
   );
+
+  const undo = useCallback(() => {
+    setStrokes((prev) => {
+      if (prev.length === 0) return prev;
+      const last = prev[prev.length - 1];
+      setRedoStack((stack) => [last, ...stack]);
+      return prev.slice(0, -1);
+    });
+  }, []);
+
+  const redo = useCallback(() => {
+    setRedoStack((prev) => {
+      if (prev.length === 0) return prev;
+      const [first, ...rest] = prev;
+      setStrokes((strokesPrev) => [...strokesPrev, first]);
+      return rest;
+    });
+  }, []);
 
   const gesture = useMemo(() => {
     const pan = Gesture.Pan()
@@ -111,6 +131,8 @@ export default function NoteCanvasScreen() {
         <View style={styles.toolbar}>
           <ToolButton label="Pen" active={tool === 'pen'} onPress={() => selectTool('pen')} />
           <ToolButton label="Eraser" active={tool === 'eraser'} onPress={() => selectTool('eraser')} />
+          <ActionButton label="Undo" onPress={undo} disabled={strokes.length === 0} />
+          <ActionButton label="Redo" onPress={redo} disabled={redoStack.length === 0} />
         </View>
         <View
           style={styles.canvasWrapper}
@@ -180,6 +202,30 @@ function ToolButton({
   );
 }
 
+function ActionButton({
+  label,
+  disabled,
+  onPress,
+}: {
+  label: string;
+  disabled: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.actionButton,
+        disabled && styles.actionButtonDisabled,
+        pressed && !disabled && styles.toolButtonPressed,
+      ]}
+    >
+      <Text style={[styles.actionLabel, disabled && styles.actionLabelDisabled]}>{label}</Text>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   root: {
     flex: 1,
@@ -217,6 +263,26 @@ const styles = StyleSheet.create({
   },
   toolLabelActive: {
     color: '#F6F1E7',
+  },
+  actionButton: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#D5C7B2',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(255,255,255,0.6)',
+  },
+  actionButtonDisabled: {
+    borderColor: '#E1D7C7',
+    backgroundColor: 'rgba(255,255,255,0.35)',
+  },
+  actionLabel: {
+    color: '#5C4F3F',
+    fontSize: 14,
+    letterSpacing: 0.2,
+  },
+  actionLabelDisabled: {
+    color: '#A89B88',
   },
   canvasWrapper: {
     flex: 1,
