@@ -1,11 +1,23 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { Canvas, notifyChange, Path, Rect, Skia } from '@shopify/react-native-skia';
+import {
+  BlendMode,
+  Canvas,
+  ImageFormat,
+  notifyChange,
+  PaintStyle,
+  Path,
+  Rect,
+  Skia,
+  StrokeCap,
+  StrokeJoin,
+} from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { runOnJS, useSharedValue } from 'react-native-reanimated';
 
-type Tool = 'pen' | 'eraser';
+type Tool = 'pen' | 'eraser' | 'select';
+type SelectionRect = { x: number; y: number; width: number; height: number };
 
 type Stroke = {
   path: ReturnType<typeof Skia.Path.Make>;
@@ -20,6 +32,7 @@ export default function NoteCanvasScreen() {
   const [tool, setTool] = useState<Tool>('pen');
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [redoStack, setRedoStack] = useState<Stroke[]>([]);
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const toolValue = useSharedValue<Tool>('pen');
   const currentPath = useSharedValue(Skia.Path.Make());
@@ -27,6 +40,13 @@ export default function NoteCanvasScreen() {
   const currentStrokeColor = useSharedValue(INK);
   const currentBlendMode = useSharedValue<'clear' | 'srcOver'>('srcOver');
   const longPressActivated = useSharedValue(false);
+  const selectionStartX = useSharedValue(0);
+  const selectionStartY = useSharedValue(0);
+  const selectionX = useSharedValue(0);
+  const selectionY = useSharedValue(0);
+  const selectionW = useSharedValue(0);
+  const selectionH = useSharedValue(0);
+  const selectionVisible = useSharedValue(0);
 
   const finalizeStroke = useCallback(
     (svgPath: string, strokeWidth: number, isEraser: boolean) => {
@@ -67,9 +87,37 @@ export default function NoteCanvasScreen() {
     });
   }, []);
 
+  const captureSelection = useCallback(
+    (rect: SelectionRect) => {
+      const width = Math.max(1, Math.round(rect.width));
+      const height = Math.max(1, Math.round(rect.height));
+      const surface = Skia.Surface.MakeOffscreen(width, height);
+      if (!surface) return;
+      const canvas = surface.getCanvas();
+      canvas.clear(Skia.Color(BACKGROUND));
+      const paint = Skia.Paint();
+      paint.setStyle(PaintStyle.Stroke);
+      paint.setStrokeCap(StrokeCap.Round);
+      paint.setStrokeJoin(StrokeJoin.Round);
+      strokes.forEach((stroke) => {
+        paint.setStrokeWidth(stroke.strokeWidth);
+        paint.setBlendMode(stroke.isEraser ? BlendMode.Clear : BlendMode.SrcOver);
+        paint.setColor(Skia.Color(INK));
+        const path = stroke.path.copy();
+        path.offset(-rect.x, -rect.y);
+        canvas.drawPath(path, paint);
+      });
+      const image = surface.makeImageSnapshot();
+      const base64 = image.encodeToBase64(ImageFormat.PNG);
+      setCapturedImage(`data:image/png;base64,${base64}`);
+    },
+    [strokes]
+  );
+
   const gesture = useMemo(() => {
     const pan = Gesture.Pan()
       .minDistance(0)
+      .enabled(tool !== 'select')
       .onBegin((event) => {
         longPressActivated.value = false;
         const nextPath = Skia.Path.Make();
@@ -99,7 +147,8 @@ export default function NoteCanvasScreen() {
       });
 
     const longPress = Gesture.LongPress()
-      .minDuration(250)
+      .minDuration(2000)
+      .enabled(tool !== 'select')
       .maxDistance(12)
       .onStart((event) => {
         longPressActivated.value = true;
@@ -113,15 +162,62 @@ export default function NoteCanvasScreen() {
         notifyChange(currentPath);
         runOnJS(selectTool)('eraser');
       });
-    return Gesture.Simultaneous(pan, longPress);
+
+    const selectGesture = Gesture.Pan()
+      .minDistance(0)
+      .enabled(tool === 'select')
+      .onBegin((event) => {
+        selectionStartX.value = event.x;
+        selectionStartY.value = event.y;
+        selectionX.value = event.x;
+        selectionY.value = event.y;
+        selectionW.value = 0;
+        selectionH.value = 0;
+        selectionVisible.value = 1;
+      })
+      .onUpdate((event) => {
+        const x0 = selectionStartX.value;
+        const y0 = selectionStartY.value;
+        const x = Math.min(x0, event.x);
+        const y = Math.min(y0, event.y);
+        const w = Math.abs(event.x - x0);
+        const h = Math.abs(event.y - y0);
+        selectionX.value = x;
+        selectionY.value = y;
+        selectionW.value = w;
+        selectionH.value = h;
+      })
+      .onEnd(() => {
+        selectionVisible.value = 0;
+        const w = selectionW.value;
+        const h = selectionH.value;
+        if (w < 2 || h < 2) return;
+        runOnJS(captureSelection)({
+          x: selectionX.value,
+          y: selectionY.value,
+          width: w,
+          height: h,
+        });
+      });
+
+    return Gesture.Simultaneous(pan, longPress, selectGesture);
   }, [
+    captureSelection,
     finalizeStroke,
     currentBlendMode,
     currentPath,
     currentStrokeColor,
     currentStrokeWidth,
     longPressActivated,
+    selectionH,
+    selectionStartX,
+    selectionStartY,
+    selectionVisible,
+    selectionW,
+    selectionX,
+    selectionY,
     selectTool,
+    tool,
     toolValue,
   ]);
 
@@ -131,8 +227,10 @@ export default function NoteCanvasScreen() {
         <View style={styles.toolbar}>
           <ToolButton label="Pen" active={tool === 'pen'} onPress={() => selectTool('pen')} />
           <ToolButton label="Eraser" active={tool === 'eraser'} onPress={() => selectTool('eraser')} />
+          <ToolButton label="Extract" active={tool === 'select'} onPress={() => selectTool('select')} />
           <ActionButton label="Undo" onPress={undo} disabled={strokes.length === 0} />
           <ActionButton label="Redo" onPress={redo} disabled={redoStack.length === 0} />
+          {capturedImage ? <Text style={styles.captureNote}>Captured</Text> : null}
         </View>
         <View
           style={styles.canvasWrapper}
@@ -170,6 +268,14 @@ export default function NoteCanvasScreen() {
                 strokeJoin="round"
                 strokeCap="round"
                 blendMode={currentBlendMode}
+              />
+              <Rect
+                x={selectionX}
+                y={selectionY}
+                width={selectionW}
+                height={selectionH}
+                color="rgba(46,35,24,0.12)"
+                opacity={selectionVisible}
               />
             </Canvas>
           </GestureDetector>
@@ -263,6 +369,11 @@ const styles = StyleSheet.create({
   },
   toolLabelActive: {
     color: '#F6F1E7',
+  },
+  captureNote: {
+    color: '#7C6A56',
+    fontSize: 12,
+    letterSpacing: 0.3,
   },
   actionButton: {
     borderRadius: 999,
