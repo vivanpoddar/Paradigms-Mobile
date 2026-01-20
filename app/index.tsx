@@ -15,6 +15,7 @@ import {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { runOnJS, useSharedValue } from 'react-native-reanimated';
+import EventSource from 'react-native-sse';
 
 type Tool = 'pen' | 'eraser' | 'select';
 type SelectionRect = { x: number; y: number; width: number; height: number };
@@ -34,6 +35,7 @@ export default function NoteCanvasScreen() {
   const [redoStack, setRedoStack] = useState<Stroke[]>([]);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [captureStatus, setCaptureStatus] = useState<string | null>(null);
+  const [captureError, setCaptureError] = useState<string | null>(null);
   const [responseText, setResponseText] = useState<string | null>(null);
   const [responseVisible, setResponseVisible] = useState(false);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
@@ -118,43 +120,106 @@ export default function NoteCanvasScreen() {
       const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
       if (!apiKey) {
         setCaptureStatus('Missing API key');
+        setCaptureError('EXPO_PUBLIC_OPENAI_API_KEY is not set.');
         return;
       }
       setCaptureStatus('Sending...');
-      try {
-        const response = await fetch('https://api.openai.com/v1/responses', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            input: [
-              {
-                role: 'user',
-                content: [
-                  { type: 'input_text', text: 'Analyze this selection.' },
-                  { type: 'input_image', image_url: dataUrl },
-                ],
-              },
-            ],
-          }),
-        });
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(errorText);
+      setCaptureError(null);
+      const source = new EventSource('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        lineEndingCharacter: '\n',
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          stream: true,
+          input: [
+            {
+              role: 'user',
+              content: [
+                { type: 'input_text', text: 'Analyze this selection.' },
+                { type: 'input_image', image_url: dataUrl },
+              ],
+            },
+          ],
+        }),
+      });
+
+      let hadError = false;
+      const timeoutId = setTimeout(() => {
+        setCaptureStatus('Timeout');
+        source.close();
+      }, 30000);
+
+      const closeStream = (status: string) => {
+        setCaptureStatus(status);
+        source.close();
+        clearTimeout(timeoutId);
+      };
+
+      const handleDelta = (event: { data: string | null }) => {
+        if (!event.data) return;
+        try {
+          const json = JSON.parse(event.data);
+          const delta = json.delta ?? json.output_text?.delta ?? json.text;
+          if (typeof delta === 'string') {
+            setResponseText((prev) => `${prev ?? ''}${delta}`);
+          }
+        } catch {
+          // Ignore malformed chunks.
         }
-        const data = await response.json();
-        const outputText =
-          data?.output?.[0]?.content?.[0]?.text ??
-          data?.output_text ??
-          'No response text';
-        setResponseText(outputText);
-        setCaptureStatus('Sent');
-      } catch (error) {
+      };
+
+      const handleMessage = (event: { data: string | null }) => {
+        if (!event.data) return;
+        const payload = event.data.startsWith('data:') ? event.data.replace(/^data:\s*/, '') : event.data;
+        if (payload === '[DONE]') {
+          closeStream('Sent');
+          return;
+        }
+        try {
+          const json = JSON.parse(payload);
+          if (json.type === 'response.output_text.delta') {
+            setResponseText((prev) => `${prev ?? ''}${json.delta ?? ''}`);
+          }
+          if (json.type === 'response.output_text.done' || json.type === 'response.completed') {
+            closeStream('Sent');
+          }
+        } catch {
+          // Ignore malformed chunks.
+        }
+      };
+
+      const handleError = (event: { message?: string }) => {
+        hadError = true;
         setCaptureStatus('Send failed');
-      }
+        setCaptureError(event?.message ?? 'Unknown error');
+        source.close();
+        clearTimeout(timeoutId);
+      };
+
+      const handleOpen = () => {
+        setCaptureStatus('Streaming...');
+      };
+
+      const handleClose = () => {
+        if (!hadError) {
+          setCaptureStatus('Sent');
+        }
+        clearTimeout(timeoutId);
+      };
+
+      source.addEventListener('open', handleOpen);
+      source.addEventListener('message', handleMessage);
+      source.addEventListener('response.output_text.delta', handleDelta);
+      source.addEventListener('response.output_text.done', () => closeStream('Sent'));
+      source.addEventListener('response.completed', () => closeStream('Sent'));
+      source.addEventListener('error', handleError);
+      source.addEventListener('close', handleClose);
+
     },
     [strokes]
   );
@@ -238,7 +303,7 @@ export default function NoteCanvasScreen() {
         const h = selectionH.value;
         if (w < 2 || h < 2) return;
         runOnJS(setResponseVisible)(true);
-        runOnJS(setResponseText)('Sending...');
+        runOnJS(setResponseText)('');
         runOnJS(captureSelection)({
           x: selectionX.value,
           y: selectionY.value,
@@ -277,9 +342,14 @@ export default function NoteCanvasScreen() {
           <ToolButton label="Extract" active={tool === 'select'} onPress={() => selectTool('select')} />
           <ActionButton label="Undo" onPress={undo} disabled={strokes.length === 0} />
           <ActionButton label="Redo" onPress={redo} disabled={redoStack.length === 0} />
-          {capturedImage ? <Text style={styles.captureNote}>Captured</Text> : null}
-          {captureStatus ? <Text style={styles.captureNote}>{captureStatus}</Text> : null}
         </View>
+        {(capturedImage || captureStatus || captureError) ? (
+          <View style={styles.statusRow}>
+            {capturedImage ? <Text style={styles.captureNote}>Captured</Text> : null}
+            {captureStatus ? <Text style={styles.captureNote}>{captureStatus}</Text> : null}
+            {captureError ? <Text style={styles.captureError}>{captureError}</Text> : null}
+          </View>
+        ) : null}
         <View
           style={styles.canvasWrapper}
           onLayout={(event) => {
@@ -399,10 +469,18 @@ const styles = StyleSheet.create({
   },
   toolbar: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 12,
     paddingHorizontal: 18,
     paddingTop: 18,
     paddingBottom: 10,
+  },
+  statusRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 18,
+    paddingBottom: 8,
   },
   toolButton: {
     borderRadius: 999,
@@ -431,6 +509,12 @@ const styles = StyleSheet.create({
     color: '#7C6A56',
     fontSize: 12,
     letterSpacing: 0.3,
+  },
+  captureError: {
+    color: '#B2473A',
+    fontSize: 11,
+    letterSpacing: 0.2,
+    maxWidth: 220,
   },
   chatPanel: {
     position: 'absolute',
