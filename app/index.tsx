@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   BlendMode,
   Canvas,
@@ -33,6 +33,9 @@ export default function NoteCanvasScreen() {
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [redoStack, setRedoStack] = useState<Stroke[]>([]);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [captureStatus, setCaptureStatus] = useState<string | null>(null);
+  const [responseText, setResponseText] = useState<string | null>(null);
+  const [responseVisible, setResponseVisible] = useState(false);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const toolValue = useSharedValue<Tool>('pen');
   const currentPath = useSharedValue(Skia.Path.Make());
@@ -88,7 +91,7 @@ export default function NoteCanvasScreen() {
   }, []);
 
   const captureSelection = useCallback(
-    (rect: SelectionRect) => {
+    async (rect: SelectionRect) => {
       const width = Math.max(1, Math.round(rect.width));
       const height = Math.max(1, Math.round(rect.height));
       const surface = Skia.Surface.MakeOffscreen(width, height);
@@ -109,7 +112,50 @@ export default function NoteCanvasScreen() {
       });
       const image = surface.makeImageSnapshot();
       const base64 = image.encodeToBase64(ImageFormat.PNG);
-      setCapturedImage(`data:image/png;base64,${base64}`);
+      const dataUrl = `data:image/png;base64,${base64}`;
+      setCapturedImage(dataUrl);
+
+      const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+      if (!apiKey) {
+        setCaptureStatus('Missing API key');
+        return;
+      }
+      setCaptureStatus('Sending...');
+      try {
+        const response = await fetch('https://api.openai.com/v1/responses', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            input: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'input_text', text: 'Analyze this selection.' },
+                  { type: 'input_image', image_url: dataUrl },
+                ],
+              },
+            ],
+          }),
+        });
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(errorText);
+        }
+        const data = await response.json();
+        const outputText =
+          data?.output?.[0]?.content?.[0]?.text ??
+          data?.output_text ??
+          'No response text';
+        setResponseText(outputText);
+        setResponseVisible(true);
+        setCaptureStatus('Sent');
+      } catch (error) {
+        setCaptureStatus('Send failed');
+      }
     },
     [strokes]
   );
@@ -224,6 +270,20 @@ export default function NoteCanvasScreen() {
   return (
     <GestureHandlerRootView style={styles.root}>
       <View style={styles.container}>
+        <Modal visible={responseVisible} transparent animationType="fade">
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Response</Text>
+              <Text style={styles.modalBody}>{responseText ?? ''}</Text>
+              <Pressable
+                style={styles.modalButton}
+                onPress={() => setResponseVisible(false)}
+              >
+                <Text style={styles.modalButtonLabel}>Close</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
         <View style={styles.toolbar}>
           <ToolButton label="Pen" active={tool === 'pen'} onPress={() => selectTool('pen')} />
           <ToolButton label="Eraser" active={tool === 'eraser'} onPress={() => selectTool('eraser')} />
@@ -231,6 +291,7 @@ export default function NoteCanvasScreen() {
           <ActionButton label="Undo" onPress={undo} disabled={strokes.length === 0} />
           <ActionButton label="Redo" onPress={redo} disabled={redoStack.length === 0} />
           {capturedImage ? <Text style={styles.captureNote}>Captured</Text> : null}
+          {captureStatus ? <Text style={styles.captureNote}>{captureStatus}</Text> : null}
         </View>
         <View
           style={styles.canvasWrapper}
@@ -373,6 +434,43 @@ const styles = StyleSheet.create({
   captureNote: {
     color: '#7C6A56',
     fontSize: 12,
+    letterSpacing: 0.3,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15,12,9,0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    backgroundColor: '#F7F0E6',
+    borderRadius: 18,
+    padding: 18,
+    width: '100%',
+    maxWidth: 520,
+  },
+  modalTitle: {
+    fontSize: 18,
+    color: '#2B2620',
+    marginBottom: 10,
+  },
+  modalBody: {
+    fontSize: 14,
+    color: '#3D342B',
+    marginBottom: 16,
+    lineHeight: 20,
+  },
+  modalButton: {
+    alignSelf: 'flex-end',
+    backgroundColor: '#2B2620',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  modalButtonLabel: {
+    color: '#F6F1E7',
+    fontSize: 13,
     letterSpacing: 0.3,
   },
   actionButton: {
