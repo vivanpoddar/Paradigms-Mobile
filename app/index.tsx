@@ -25,6 +25,7 @@ export default function NoteCanvasScreen() {
   const currentStrokeWidth = useSharedValue(3);
   const currentStrokeColor = useSharedValue(INK);
   const currentBlendMode = useSharedValue<'clear' | 'srcOver'>('srcOver');
+  const longPressActivated = useSharedValue(false);
 
   const finalizeStroke = useCallback(
     (svgPath: string, strokeWidth: number, isEraser: boolean) => {
@@ -46,49 +47,71 @@ export default function NoteCanvasScreen() {
     [toolValue]
   );
 
-  const gesture = useMemo(
-    () =>
-      Gesture.Pan()
-        .minDistance(0)
-        .onBegin((event) => {
-          const nextPath = Skia.Path.Make();
-          nextPath.moveTo(event.x, event.y);
-          nextPath.lineTo(event.x + 0.01, event.y + 0.01);
-          currentPath.value = nextPath;
-          currentStrokeWidth.value = toolValue.value === 'pen' ? 3 : 24;
-          currentStrokeColor.value = toolValue.value === 'eraser' ? '#000000' : INK;
-          currentBlendMode.value = toolValue.value === 'eraser' ? 'clear' : 'srcOver';
-          notifyChange(currentPath);
-        })
-        .onUpdate((event) => {
-          currentPath.value.lineTo(event.x, event.y);
-          notifyChange(currentPath);
-        })
-        .onEnd(() => {
-          const svgPath = currentPath.value.toSVGString();
-          runOnJS(finalizeStroke)(
-            svgPath,
-            currentStrokeWidth.value,
-            currentBlendMode.value === 'clear'
-          );
-        }),
-    [
-      finalizeStroke,
-      currentBlendMode,
-      currentPath,
-      currentStrokeColor,
-      currentStrokeWidth,
-      toolValue,
-    ]
-  );
+  const gesture = useMemo(() => {
+    const pan = Gesture.Pan()
+      .minDistance(0)
+      .onBegin((event) => {
+        longPressActivated.value = false;
+        const nextPath = Skia.Path.Make();
+        nextPath.moveTo(event.x, event.y);
+        nextPath.lineTo(event.x + 0.01, event.y + 0.01);
+        currentPath.value = nextPath;
+        currentStrokeWidth.value = toolValue.value === 'pen' ? 3 : 24;
+        currentStrokeColor.value = toolValue.value === 'eraser' ? '#000000' : INK;
+        currentBlendMode.value = toolValue.value === 'eraser' ? 'clear' : 'srcOver';
+        notifyChange(currentPath);
+      })
+      .onUpdate((event) => {
+        currentPath.value.lineTo(event.x, event.y);
+        notifyChange(currentPath);
+      })
+      .onEnd(() => {
+        const svgPath = currentPath.value.toSVGString();
+        runOnJS(finalizeStroke)(
+          svgPath,
+          currentStrokeWidth.value,
+          currentBlendMode.value === 'clear'
+        );
+        if (longPressActivated.value) {
+          longPressActivated.value = false;
+          runOnJS(selectTool)('pen');
+        }
+      });
+
+    const longPress = Gesture.LongPress()
+      .minDuration(250)
+      .maxDistance(12)
+      .onStart((event) => {
+        longPressActivated.value = true;
+        currentStrokeWidth.value = 24;
+        currentStrokeColor.value = '#000000';
+        currentBlendMode.value = 'clear';
+        const nextPath = Skia.Path.Make();
+        nextPath.moveTo(event.x, event.y);
+        nextPath.lineTo(event.x + 0.01, event.y + 0.01);
+        currentPath.value = nextPath;
+        notifyChange(currentPath);
+        runOnJS(selectTool)('eraser');
+      });
+    return Gesture.Simultaneous(pan, longPress);
+  }, [
+    finalizeStroke,
+    currentBlendMode,
+    currentPath,
+    currentStrokeColor,
+    currentStrokeWidth,
+    longPressActivated,
+    selectTool,
+    toolValue,
+  ]);
 
   return (
     <GestureHandlerRootView style={styles.root}>
       <View style={styles.container}>
         <View style={styles.toolbar}>
-        <ToolButton label="Pen" active={tool === 'pen'} onPress={() => selectTool('pen')} />
-        <ToolButton label="Eraser" active={tool === 'eraser'} onPress={() => selectTool('eraser')} />
-      </View>
+          <ToolButton label="Pen" active={tool === 'pen'} onPress={() => selectTool('pen')} />
+          <ToolButton label="Eraser" active={tool === 'eraser'} onPress={() => selectTool('eraser')} />
+        </View>
         <View
           style={styles.canvasWrapper}
           onLayout={(event) => {
@@ -98,31 +121,37 @@ export default function NoteCanvasScreen() {
         >
           <GestureDetector gesture={gesture}>
             <Canvas style={styles.canvas}>
-              <Rect x={0} y={0} width={canvasSize.width} height={canvasSize.height} color={BACKGROUND} />
-            {strokes.map((stroke, index) => (
-              <Path
-                key={index}
-                path={stroke.path}
-                color={stroke.isEraser ? '#000000' : INK}
+              <Rect
+                x={0}
+                y={0}
+                width={canvasSize.width}
+                height={canvasSize.height}
+                color={BACKGROUND}
+              />
+              {strokes.map((stroke, index) => (
+                <Path
+                  key={index}
+                  path={stroke.path}
+                  color={stroke.isEraser ? '#000000' : INK}
                   style="stroke"
                   strokeWidth={stroke.strokeWidth}
                   strokeJoin="round"
                   strokeCap="round"
-                blendMode={stroke.isEraser ? 'clear' : 'srcOver'}
+                  blendMode={stroke.isEraser ? 'clear' : 'srcOver'}
+                />
+              ))}
+              <Path
+                path={currentPath}
+                color={currentStrokeColor}
+                style="stroke"
+                strokeWidth={currentStrokeWidth}
+                strokeJoin="round"
+                strokeCap="round"
+                blendMode={currentBlendMode}
               />
-            ))}
-            <Path
-              path={currentPath}
-              color={currentStrokeColor}
-              style="stroke"
-              strokeWidth={currentStrokeWidth}
-              strokeJoin="round"
-              strokeCap="round"
-              blendMode={currentBlendMode}
-            />
-          </Canvas>
-        </GestureDetector>
-      </View>
+            </Canvas>
+          </GestureDetector>
+        </View>
       </View>
     </GestureHandlerRootView>
   );
