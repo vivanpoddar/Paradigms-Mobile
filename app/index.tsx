@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   BlendMode,
   Canvas,
@@ -151,7 +151,6 @@ export default function NoteCanvasScreen() {
           data?.output_text ??
           'No response text';
         setResponseText(outputText);
-        setResponseVisible(true);
         setCaptureStatus('Sent');
       } catch (error) {
         setCaptureStatus('Send failed');
@@ -238,6 +237,8 @@ export default function NoteCanvasScreen() {
         const w = selectionW.value;
         const h = selectionH.value;
         if (w < 2 || h < 2) return;
+        runOnJS(setResponseVisible)(true);
+        runOnJS(setResponseText)('Sending...');
         runOnJS(captureSelection)({
           x: selectionX.value,
           y: selectionY.value,
@@ -270,20 +271,6 @@ export default function NoteCanvasScreen() {
   return (
     <GestureHandlerRootView style={styles.root}>
       <View style={styles.container}>
-        <Modal visible={responseVisible} transparent animationType="fade">
-          <View style={styles.modalBackdrop}>
-            <View style={styles.modalCard}>
-              <Text style={styles.modalTitle}>Response</Text>
-              <Text style={styles.modalBody}>{responseText ?? ''}</Text>
-              <Pressable
-                style={styles.modalButton}
-                onPress={() => setResponseVisible(false)}
-              >
-                <Text style={styles.modalButtonLabel}>Close</Text>
-              </Pressable>
-            </View>
-          </View>
-        </Modal>
         <View style={styles.toolbar}>
           <ToolButton label="Pen" active={tool === 'pen'} onPress={() => selectTool('pen')} />
           <ToolButton label="Eraser" active={tool === 'eraser'} onPress={() => selectTool('eraser')} />
@@ -341,6 +328,15 @@ export default function NoteCanvasScreen() {
             </Canvas>
           </GestureDetector>
         </View>
+        {responseVisible ? (
+          <View style={styles.chatPanel}>
+            <Text style={styles.chatTitle}>Response</Text>
+            <Text style={styles.chatBody}>{responseText ?? ''}</Text>
+            <Pressable style={styles.chatClose} onPress={() => setResponseVisible(false)}>
+              <Text style={styles.chatCloseLabel}>Hide</Text>
+            </Pressable>
+          </View>
+        ) : null}
       </View>
     </GestureHandlerRootView>
   );
@@ -436,39 +432,40 @@ const styles = StyleSheet.create({
     fontSize: 12,
     letterSpacing: 0.3,
   },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(15,12,9,0.5)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 24,
-  },
-  modalCard: {
+  chatPanel: {
+    position: 'absolute',
+    right: 16,
+    top: 76,
+    bottom: 16,
+    width: 260,
     backgroundColor: '#F7F0E6',
     borderRadius: 18,
-    padding: 18,
-    width: '100%',
-    maxWidth: 520,
+    padding: 14,
+    shadowColor: '#000000',
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
   },
-  modalTitle: {
+  chatTitle: {
     fontSize: 18,
     color: '#2B2620',
     marginBottom: 10,
   },
-  modalBody: {
+  chatBody: {
     fontSize: 14,
     color: '#3D342B',
     marginBottom: 16,
     lineHeight: 20,
   },
-  modalButton: {
+  chatClose: {
     alignSelf: 'flex-end',
     backgroundColor: '#2B2620',
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 999,
   },
-  modalButtonLabel: {
+  chatCloseLabel: {
     color: '#F6F1E7',
     fontSize: 13,
     letterSpacing: 0.3,
